@@ -1,3 +1,4 @@
+/// <reference types="node" />
 const BASE_URL = 'https://services.leadconnectorhq.com'
 
 const headers = () => ({
@@ -15,20 +16,6 @@ export async function getPipelineStages() {
   return res.json()
 }
 
-export async function getOpportunitiesByStage(stageId: string) {
-  const params = new URLSearchParams({
-    location_id: process.env.GHL_LOCATION_ID!,
-    pipeline_stage_id: stageId,
-    limit: '100',
-  })
-  const res = await fetch(
-    `${BASE_URL}/opportunities/search?${params}`,
-    { headers: headers() }
-  )
-  if (!res.ok) throw new Error(`Opportunities error: ${res.status}`)
-  return res.json()
-}
-
 export async function getOpportunitiesByPipeline() {
   const params = new URLSearchParams({
     location_id: process.env.GHL_LOCATION_ID!,
@@ -41,6 +28,18 @@ export async function getOpportunitiesByPipeline() {
   )
   if (!res.ok) throw new Error(`Opportunities error: ${res.status}`)
   return res.json()
+}
+
+// Fetches full contact data including customFields and dateAdded
+export async function getContact(contactId: string) {
+  const res = await fetch(
+    `${BASE_URL}/contacts/${contactId}`,
+    { headers: headers() }
+  )
+  if (!res.ok) throw new Error(`Contact error: ${res.status}`)
+  const data = await res.json()
+  // GHL wraps it in data.contact
+  return data.contact ?? data
 }
 
 export async function updateOpportunityStage(opportunityId: string, stageId: string) {
