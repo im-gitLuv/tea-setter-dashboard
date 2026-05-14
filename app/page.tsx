@@ -325,7 +325,8 @@ function DialSessionSelector({ leads, stageName, onStart, onCancel }: {
                   <p style={{ fontSize:10, color:C.textLight }}>{lead.contact?.phone ?? '—'}{appt ? ` · 📅 ${appt}` : ''}</p>
                 </div>
                 {lead.contact?.phone && (
-                  <a href={`tel:${lead.contact.phone}`} onClick={e => e.stopPropagation()}
+                  <a href={`https://app.funnelup.io/v2/location/${process.env.NEXT_PUBLIC_GHL_LOCATION_ID}/contacts/detail/${lead.contactId}`}
+                    target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
                     style={{ padding:'4px 10px', background:C.green, borderRadius:6, color:'#fff', fontSize:10, fontWeight:700, textDecoration:'none', flexShrink:0, whiteSpace:'nowrap' as const }}>
                     📞
                   </a>
@@ -920,12 +921,12 @@ export default function Dashboard() {
                 {stages.filter(s=>s.id!==selectedStage?.id).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             )}
-            {activeLead.contact?.phone && (
-              <a href={`tel:${activeLead.contact.phone}`}
-                style={{ padding:'7px 14px', background:C.green, border:'none', borderRadius:8, color:'#fff', fontSize:11.5, textDecoration:'none', fontFamily:'inherit', fontWeight:700, display:'flex', alignItems:'center', gap:5 }}>
-                📞 {activeLead.contact.phone}
-              </a>
-            )}
+            <a
+              href={`https://app.funnelup.io/v2/location/${process.env.NEXT_PUBLIC_GHL_LOCATION_ID}/contacts/detail/${activeLead.contactId}`}
+              target="_blank" rel="noopener noreferrer"
+              style={{ padding:'8px 16px', background:C.green, border:'none', borderRadius:8, color:'#fff', fontSize:12, textDecoration:'none', fontFamily:'inherit', fontWeight:700, display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
+              📞 Llamar
+            </a>
             <a href={`https://app.funnelup.io/v2/location/${process.env.NEXT_PUBLIC_GHL_LOCATION_ID}/contacts/detail/${activeLead.contactId}`}
               target="_blank" rel="noopener noreferrer"
               style={{ padding:'7px 14px', background:C.bg, border:`1px solid ${C.border}`, borderRadius:8, color:C.blue, fontSize:11.5, textDecoration:'none', fontFamily:'inherit', fontWeight:600 }}>
