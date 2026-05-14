@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { SCRIPTS, Script, ScriptSection, WidgetType } from '@/data/scripts'
 
 // ── Constants ─────────────────────────────────────────────────────────────
@@ -226,16 +226,15 @@ export default function Dashboard() {
   const [moving, setMoving]               = useState(false)
   const [bookingModal, setBookingModal]   = useState<{calId:string;title:string}|null>(null)
   const [sendingWA, setSendingWA]         = useState<string|null>(null)
-  const pollRef   = useRef<ReturnType<typeof setInterval>|null>(null)
-  const moveLockRef = useRef(false)
+  const [refreshing, setRefreshing]       = useState(false)
 
   const showToast = (msg: string, type: 'success'|'error' = 'success') => {
     setToast({ msg, type }); setTimeout(() => setToast(null), 3500)
   }
 
-  const fetchLeads = useCallback(async (silent = false) => {
-    if (moveLockRef.current) return   // don't poll while move is locked
-    if (!silent) setLoading(true)
+  const fetchLeads = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true)
+    else setLoading(true)
     try {
       const res  = await fetch('/api/leads')
       const data = await res.json()
@@ -245,16 +244,12 @@ export default function Dashboard() {
       setOpportunities(newOpps)
       if (newStages.length > 0 && !selectedStage) setSelectedStage(newStages[0])
       setSelectedLead(prev => prev ? (newOpps.find(o => o.id === prev.id) ?? prev) : prev)
-    } catch { if (!silent) showToast('Error cargando leads', 'error') }
-    finally { if (!silent) setLoading(false) }
+      if (isRefresh) showToast('✓ Datos actualizados')
+    } catch { showToast('Error cargando leads', 'error') }
+    finally { if (isRefresh) setRefreshing(false); else setLoading(false) }
   }, [selectedStage])
 
   useEffect(() => { fetchLeads() }, [])
-
-  useEffect(() => {
-    pollRef.current = setInterval(() => fetchLeads(true), 30_000)
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [fetchLeads])
 
   const fetchNotes = useCallback(async (contactId: string) => {
     try { const r = await fetch(`/api/notes?contactId=${contactId}`); const d = await r.json(); setNotes(d.notes||[]) }
@@ -305,7 +300,6 @@ export default function Dashboard() {
   const confirmMove  = async () => {
     if (!selectedLead || !moveTargetStage) return
     setMoving(true)
-    moveLockRef.current = true
     try {
       const res = await fetch('/api/opportunity', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -316,9 +310,7 @@ export default function Dashboard() {
       setSelectedLead(prev => prev ? { ...prev, pipelineStageId: moveTargetStage.id } : prev)
       setSelectedStage(moveTargetStage)
       showToast(`✓ Movido a: ${moveTargetStage.name}`)
-      // Release poll lock after 90s (enough time for FunnelUp to sync)
-      setTimeout(() => { moveLockRef.current = false }, 90_000)
-    } catch { showToast('Error al mover el lead', 'error'); moveLockRef.current = false }
+    } catch { showToast('Error al mover el lead', 'error') }
     finally { setMoving(false); setShowMoveModal(false); setMoveTargetStage(null) }
   }
 
@@ -587,8 +579,22 @@ export default function Dashboard() {
             })}
         </div>
         <div style={{ padding:'10px 8px', borderTop:'1px solid rgba(255,255,255,0.08)' }}>
-          <button onClick={()=>fetchLeads(false)} style={{ width:'100%', background:'rgba(255,255,255,0.07)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:8, padding:'7px 0', color:'rgba(255,255,255,0.5)', cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
-            ↻ Actualizar
+          <button
+            onClick={() => fetchLeads(true)}
+            disabled={refreshing || loading}
+            style={{
+              width:'100%',
+              background: refreshing ? 'rgba(71,137,200,0.25)' : 'rgba(255,255,255,0.07)',
+              border: `1px solid ${refreshing ? 'rgba(71,137,200,0.5)' : 'rgba(255,255,255,0.12)'}`,
+              borderRadius:8, padding:'9px 0',
+              color: refreshing ? '#4789C8' : 'rgba(255,255,255,0.6)',
+              cursor: refreshing ? 'not-allowed' : 'pointer',
+              fontSize:11, fontFamily:'inherit', fontWeight:600,
+              display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+              transition:'all 0.2s',
+            }}>
+            <span style={{ display:'inline-block', animation: refreshing ? 'spin 1s linear infinite' : 'none' }}>↻</span>
+            {refreshing ? 'Actualizando...' : 'Actualizar'}
           </button>
         </div>
       </div>
@@ -804,6 +810,7 @@ export default function Dashboard() {
         ::-webkit-scrollbar-thumb{background:#DDE3F0;border-radius:3px}
         ::-webkit-scrollbar-thumb:hover{background:#4789C8}
         @keyframes fadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
         input::placeholder,textarea::placeholder{color:#9CA3AF}
         select option{color:#1a1e3a}
       `}</style>
