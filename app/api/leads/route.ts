@@ -20,9 +20,10 @@ export async function GET() {
     const opportunities = oppsData?.opportunities || []
 
     // Enrich with full contact data in batches of 5 to avoid rate limits
-    const enriched: unknown[] = []
-    for (let i = 0; i < opportunities.length; i += 5) {
-      const batch = opportunities.slice(i, i + 5)
+    const enriched: Record<string, unknown>[] = []
+    const typedOpps = opportunities as Record<string, unknown>[]
+    for (let i = 0; i < typedOpps.length; i += 5) {
+      const batch = typedOpps.slice(i, i + 5)
       const results = await Promise.all(
         batch.map(async (opp: Record<string, unknown>) => {
           const contactId = opp.contactId as string
