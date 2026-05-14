@@ -2,6 +2,10 @@
 import { NextResponse } from 'next/server'
 import { getOpportunitiesByPipeline, getPipelineStages, getContact } from '@/lib/ghl'
 
+// Force dynamic — never cache this route
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 export async function GET() {
   try {
     const [oppsData, pipelinesData] = await Promise.all([
@@ -15,34 +19,44 @@ export async function GET() {
 
     const opportunities = oppsData?.opportunities || []
 
-    // Enrich each opportunity with full contact data (customFields, dateAdded, etc.)
-    // Run in parallel, max 10 at a time to avoid rate limits
-    const enriched = await Promise.all(
-      opportunities.map(async (opp: Record<string, unknown>) => {
-        const contactId = opp.contactId as string
-        if (!contactId) return opp
-        try {
-          const fullContact = await getContact(contactId)
-          return {
-            ...opp,
-            contact: {
-              // Merge existing basic contact data with full contact data
-              ...(opp.contact as Record<string, unknown> ?? {}),
-              ...fullContact,
-            },
+    // Enrich with full contact data in batches of 5 to avoid rate limits
+    const enriched: unknown[] = []
+    for (let i = 0; i < opportunities.length; i += 5) {
+      const batch = opportunities.slice(i, i + 5)
+      const results = await Promise.all(
+        batch.map(async (opp: Record<string, unknown>) => {
+          const contactId = opp.contactId as string
+          if (!contactId) return opp
+          try {
+            const fullContact = await getContact(contactId)
+            return {
+              ...opp,
+              contact: {
+                ...(opp.contact as Record<string, unknown> ?? {}),
+                ...fullContact,
+              },
+            }
+          } catch {
+            return opp
           }
-        } catch {
-          // If contact fetch fails, return opp as-is
-          return opp
-        }
-      })
-    )
+        })
+      )
+      enriched.push(...results)
+    }
 
-    return NextResponse.json({
-      opportunities: enriched,
-      stages: pipeline?.stages || [],
-      total: enriched.length,
-    })
+    return NextResponse.json(
+      {
+        opportunities: enriched,
+        stages: pipeline?.stages || [],
+        total: enriched.length,
+      },
+      {
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          'Pragma': 'no-cache',
+        },
+      }
+    )
   } catch (err) {
     console.error('Leads API error:', err)
     return NextResponse.json({ error: 'Failed to fetch leads' }, { status: 500 })
