@@ -21,18 +21,26 @@ export async function getPipelineStages() {
 }
 
 export async function getOpportunitiesByPipeline() {
-  // Fetch all pages (100 per page max)
-  const allOpps: unknown[] = []
+  // Fetch all pages (100 per page max).
+  // GHL cursor pagination requires BOTH startAfter (timestamp) AND startAfterId (last opp id).
+  // Sending only startAfter makes GHL ignore the cursor and re-serve page 1 → x10 duplication.
+  const allOpps: Record<string, unknown>[] = []
+  const seenIds = new Set<string>()
   let startAfter: string | null = null
+  let startAfterId: string | null = null
   let page = 0
 
-  while (page < 10) { // safety cap at 1000 opportunities
+  while (page < 20) { // safety cap at 2000 opportunities
     const params = new URLSearchParams({
       location_id: process.env.GHL_LOCATION_ID!,
       pipeline_id: process.env.GHL_PIPELINE_ID!,
       limit: '100',
     })
-    if (startAfter) params.set('startAfter', startAfter)
+    // Only advance with a complete cursor — both fields are mandatory together
+    if (startAfter && startAfterId) {
+      params.set('startAfter', startAfter)
+      params.set('startAfterId', startAfterId)
+    }
 
     const res = await freshFetch(
       `${BASE_URL}/opportunities/search?${params}`,
@@ -40,14 +48,43 @@ export async function getOpportunitiesByPipeline() {
     )
     if (!res.ok) throw new Error(`Opportunities error: ${res.status}`)
     const data = await res.json()
-    const opps = data?.opportunities || []
-    allOpps.push(...opps)
+    const opps: Record<string, unknown>[] = data?.opportunities || []
 
-    // Stop if we got less than a full page
+    // Guard 1: empty page → done
+    if (opps.length === 0) break
+
+    // Dedupe by id while collecting (guards against a stuck cursor re-serving a page)
+    let newCount = 0
+    for (const opp of opps) {
+      const id = opp.id as string
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id)
+        allOpps.push(opp)
+        newCount++
+      }
+    }
+
+    // Guard 2: page returned only duplicates → cursor is stuck, stop before x10
+    if (newCount === 0) break
+
+    // End of data: less than a full page
     if (opps.length < 100) break
-    // Get cursor for next page
-    startAfter = data?.meta?.startAfter ?? null
-    if (!startAfter) break
+
+    // Advance cursor from meta — GHL returns new startAfter + startAfterId each page
+    const nextStartAfter =
+      data?.meta?.startAfter != null ? String(data.meta.startAfter) : null
+    const nextStartAfterId = data?.meta?.startAfterId ?? null
+
+    // Guard 3: cursor missing or didn't advance → stop
+    if (
+      !nextStartAfterId ||
+      (nextStartAfter === startAfter && nextStartAfterId === startAfterId)
+    ) {
+      break
+    }
+
+    startAfter = nextStartAfter
+    startAfterId = nextStartAfterId
     page++
   }
 
