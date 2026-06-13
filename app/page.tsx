@@ -28,6 +28,26 @@ const OUTCOME_TAGS: Record<string, string[]> = {
   not_qualified:     ['no califica', 'lead_not_qualified'],
 }
 
+const OPTIN_MESSAGE = (name: string) =>
+`Hola, ${name}. 👋 te habla Luis del Equipo de Talk English Academy, de parte de Orlando.
+Vi que ingresaste tus datos en nuestra plataforma para conocer mas el programa de mentoring
+
+Si aun tienes interes en conocer el programa responde este mensaje y te comento sobre tu siguiente paso.`
+
+const QUAL_BOOKED_MESSAGE = (name: string, apptDate: string, apptTime: string) =>
+`Hola, ${name}. 👋 te habla Luis del Equipo de Talk English Academy, de parte de Orlando.
+Tienes una cita con nosotros el ${apptDate || '{Fecha de Cita}'} a las ${apptTime || '{Hora de Cita}'}
+
+me confirmas que estaras en el lugar a tiempo?`
+
+// Decide which quick-copy WhatsApp template applies based on the current stage
+// and whether the lead has an appointment booked (CF_APPT_DATE present).
+function getQuickMessageTemplate(stageName: string | undefined, hasAppt: boolean): 'optin' | 'qual_booked' {
+  const n = (stageName ?? '').toLowerCase()
+  if (hasAppt) return 'qual_booked'
+  return 'optin'
+}
+
 const PAYMENT_MESSAGES = {
   zelle: (name: string) =>
 `💳 *Datos de Pago — Zelle*
@@ -118,6 +138,54 @@ function resolveVars(text: string, lead: Opportunity | null): string {
     '{Fecha de Registro}': regDate, '{Tu Número}': '+1 689-280-9986',
   }
   return text.replace(/\{[^}]+\}/g, m => { const v = map[m]; return (v === undefined || v === '') ? m : v })
+}
+
+const MONTH_MAP: Record<string,string> = {
+  'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
+  'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12'
+}
+
+// Parse "lunes, 6 de julio de 2026 8:00" → { year, month, day, hour, minute } or null
+function parseApptParts(apptRaw: string): { year:string; month:string; day:string; hour:string; minute:string } | null {
+  if (!apptRaw) return null
+  const m = apptRaw.match(/^(.+?)\s+(\d{1,2}):(\d{2})$/)
+  if (!m) return null
+  const dateStr = m[1].trim()
+  const hour = m[2].padStart(2,'0')
+  const minute = m[3]
+  const parts = dateStr.replace(/^[^,]+,\s*/, '').split(' de ')
+  if (parts.length < 3) return null
+  const day = parts[0].trim().padStart(2,'0')
+  const month = MONTH_MAP[parts[1].trim().toLowerCase()] || '01'
+  const year = parts[2].trim()
+  return { year, month, day, hour, minute }
+}
+
+// Given the appointment text (assumed to be in the contact's local timezone) and the
+// contact's IANA timezone, return the equivalent moment formatted in Luis's local timezone.
+function getApptInLuisTime(apptRaw: string, contactTz?: string): string {
+  const parts = parseApptParts(apptRaw)
+  if (!parts) return ''
+  const { year, month, day, hour, minute } = parts
+  const wallClock = `${year}-${month}-${day}T${hour}:${minute}:00`
+  if (!contactTz) {
+    return new Date(wallClock).toLocaleString('es-ES', { weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit', hour12:false })
+  }
+  try {
+    // Find the UTC instant whose wall-clock time in contactTz matches `wallClock`
+    const naiveUTC = new Date(`${wallClock}Z`)
+    const tzFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: contactTz, year:'numeric', month:'2-digit', day:'2-digit',
+      hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false,
+    })
+    const asIfUTC = tzFormatter.formatToParts(naiveUTC).reduce((acc, p) => { acc[p.type]=p.value; return acc }, {} as Record<string,string>)
+    const tzAsUTC = new Date(`${asIfUTC.year}-${asIfUTC.month}-${asIfUTC.day}T${asIfUTC.hour}:${asIfUTC.minute}:${asIfUTC.second}Z`)
+    const offsetMs = naiveUTC.getTime() - tzAsUTC.getTime()
+    const realUTC = new Date(naiveUTC.getTime() + offsetMs)
+    return realUTC.toLocaleString('es-ES', { weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit', hour12:false })
+  } catch {
+    return new Date(wallClock).toLocaleString('es-ES', { weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit', hour12:false })
+  }
 }
 
 // Calculate target stage based on appointment date
@@ -384,6 +452,15 @@ export default function Dashboard() {
     setToast({ msg, type }); setTimeout(() => setToast(null), 3500)
   }
 
+  const copyToClipboard = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast(`✓ ${label} copiado`)
+    } catch {
+      showToast('No se pudo copiar', 'error')
+    }
+  }
+
   const fetchLeads = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoading(true)
     try {
@@ -601,13 +678,24 @@ export default function Dashboard() {
   }
 
   // ── WhatsApp send ──────────────────────────────────────────────────────
-  const sendWhatsApp = async (type: 'zelle'|'paypal'|'binance'|'4step') => {
+  const sendWhatsApp = async (type: 'zelle'|'paypal'|'binance'|'4step'|'optin'|'qual_booked') => {
     if (!selectedLead?.contactId) return
     const firstName = selectedLead.contact?.firstName ?? 'estudiante'
     setSendingWA(type)
-    let message = type === '4step'
-      ? `Hola ${firstName}, aquí está el enlace para acceder al Portal de Miembros de Talk English Academy:\n\n${TRIGGER_4STEP}\n\nHaz clic en el enlace, ingresa con tu correo y completa los 4 pasos antes de tu próxima cita. ¡Cualquier duda me avisas!`
-      : PAYMENT_MESSAGES[type](firstName)
+    let message = ''
+    if (type === '4step') {
+      message = `Hola ${firstName}, aquí está el enlace para acceder al Portal de Miembros de Talk English Academy:\n\n${TRIGGER_4STEP}\n\nHaz clic en el enlace, ingresa con tu correo y completa los 4 pasos antes de tu próxima cita. ¡Cualquier duda me avisas!`
+    } else if (type === 'optin') {
+      message = OPTIN_MESSAGE(firstName)
+    } else if (type === 'qual_booked') {
+      const apptRaw = getCF(selectedLead.contact?.customFields, CF_APPT_DATE)
+      const apptParts = apptRaw.match(/^(.+?)\s+(\d{1,2}:\d{2})$/)
+      const apptDate = apptParts ? apptParts[1].trim() : ''
+      const apptTime = apptParts ? apptParts[2].trim() : ''
+      message = QUAL_BOOKED_MESSAGE(firstName, apptDate, apptTime)
+    } else {
+      message = PAYMENT_MESSAGES[type](firstName)
+    }
     try {
       const res = await fetch('/api/whatsapp', {
         method:'POST', headers:{'Content-Type':'application/json'},
@@ -872,8 +960,13 @@ export default function Dashboard() {
                 <div key={opp.id} onClick={()=>{ if(!dialActive){ setSelectedLead(opp); setActiveTab('script'); setShowVoicemail(false); setShowNotAnswered(false) } }}
                   style={{ padding:'10px 12px', cursor:dialActive?'default':'pointer', borderBottom:`1px solid ${C.border}`, background:isActiveDial?'#FFF1F2':sel?'#EEF2FF':'transparent', borderLeft:isActiveDial?`3px solid ${C.red}`:sel?`3px solid ${C.blue}`:'3px solid transparent' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                    <div style={{ width:34, height:34, borderRadius:'50%', background:isActiveDial?C.red:sel?C.blue:'#E8EDF8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:sel||isActiveDial?'#fff':C.blue, flexShrink:0 }}>
-                      {getInitials(opp)}
+                    <div style={{ position:'relative', flexShrink:0 }}>
+                      <div style={{ width:34, height:34, borderRadius:'50%', background:isActiveDial?C.red:sel?C.blue:'#E8EDF8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:sel||isActiveDial?'#fff':C.blue }}>
+                        {getInitials(opp)}
+                      </div>
+                      {getCF(opp.contact?.customFields, CF_APPT_DATE) && (
+                        <span title="Tiene cita agendada" style={{ position:'absolute', top:-3, right:-3, width:14, height:14, borderRadius:'50%', background:C.red, border:`2px solid ${C.white}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:8 }}>📅</span>
+                      )}
                     </div>
                     <div style={{ minWidth:0 }}>
                       <p style={{ fontSize:13, fontWeight:600, color:sel?C.darkBlue:C.text, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{getFullName(opp)}</p>
@@ -911,9 +1004,57 @@ export default function Dashboard() {
                 <span>{activeLead.contact?.email??'—'}</span>
                 <span>·</span>
                 <span>{activeLead.contact?.phone??'—'}</span>
-                {getCF(activeLead.contact?.customFields,CF_APPT_DATE)&&<span style={{ background:'#EEF2FF', color:C.blue, borderRadius:6, padding:'1px 8px', fontWeight:600, fontSize:10.5 }}>📅 {getCF(activeLead.contact?.customFields,CF_APPT_DATE)}</span>}
+                {activeLead.contact?.phone && (
+                  <button onClick={()=>copyToClipboard(activeLead.contact!.phone!, 'Número')}
+                    title="Copiar número"
+                    style={{ background:C.bg, border:`1px solid ${C.border}`, borderRadius:6, padding:'1px 7px', color:C.blue, fontSize:10.5, cursor:'pointer', fontFamily:'inherit', fontWeight:600 }}>
+                    📋 Copiar
+                  </button>
+                )}
+                {(() => {
+                  const apptRaw = getCF(activeLead.contact?.customFields, CF_APPT_DATE)
+                  if (!apptRaw) return null
+                  const luisTime = getApptInLuisTime(apptRaw, activeLead.contact?.timezone)
+                  return (
+                    <span style={{ background:'#EEF2FF', color:C.blue, borderRadius:6, padding:'2px 8px', fontWeight:600, fontSize:10.5, display:'flex', alignItems:'center', gap:6 }}>
+                      <span>📅 {apptRaw}{activeLead.contact?.timezone ? ` (${activeLead.contact.timezone})` : ''}</span>
+                      {luisTime && (
+                        <>
+                          <span style={{ color:C.textLight }}>·</span>
+                          <span>🕐 Tu hora: {luisTime}</span>
+                        </>
+                      )}
+                    </span>
+                  )
+                })()}
               </p>
             </div>
+            <button onClick={() => {
+                const apptRaw = getCF(activeLead.contact?.customFields, CF_APPT_DATE)
+                const hasAppt = !!apptRaw
+                const firstName = activeLead.contact?.firstName ?? 'estudiante'
+                const template = getQuickMessageTemplate(selectedStage?.name, hasAppt)
+                let message = ''
+                if (template === 'qual_booked') {
+                  const apptParts = apptRaw.match(/^(.+?)\s+(\d{1,2}:\d{2})$/)
+                  const apptDate = apptParts ? apptParts[1].trim() : ''
+                  const apptTime = apptParts ? apptParts[2].trim() : ''
+                  message = QUAL_BOOKED_MESSAGE(firstName, apptDate, apptTime)
+                } else {
+                  message = OPTIN_MESSAGE(firstName)
+                }
+                copyToClipboard(message, 'Mensaje')
+              }}
+              title="Copiar mensaje plantilla para WhatsApp"
+              style={{ padding:'7px 12px', background:C.bg, border:`1px solid ${C.border}`, borderRadius:8, color:C.blue, fontSize:11.5, cursor:'pointer', fontFamily:'inherit', fontWeight:600, display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
+              📋 Copiar mensaje
+            </button>
+            <a href={`https://wa.me/${activeLead.contact?.phone?.replace(/[^\d+]/g,'') ?? ''}`}
+              target="_blank" rel="noopener noreferrer"
+              title="Abrir WhatsApp con este contacto"
+              style={{ padding:'7px 14px', background:'#25D366', border:'none', borderRadius:8, color:'#fff', fontSize:11.5, textDecoration:'none', fontFamily:'inherit', fontWeight:700, display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
+              💬 WhatsApp
+            </a>
             {!dialActive && (
               <select onChange={e=>{ const t=stages.find(s=>s.id===e.target.value); if(t&&t.id!==selectedStage?.id) initiateMove(t); e.target.value='' }} defaultValue=""
                 style={{ padding:'7px 12px', background:C.white, border:`1px solid ${C.border}`, borderRadius:8, color:C.blue, fontSize:11.5, cursor:'pointer', fontFamily:'inherit', fontWeight:600, outline:'none' }}>
