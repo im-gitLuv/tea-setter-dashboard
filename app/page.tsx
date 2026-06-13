@@ -32,7 +32,7 @@ const OPTIN_MESSAGE = (name: string) =>
 `Hola, ${name}. 👋 te habla Luis del Equipo de Talk English Academy, de parte de Orlando.
 Vi que ingresaste tus datos en nuestra plataforma para conocer mas el programa de mentoring
 
-Si aun tienes interes en conocer el programa responde este mensaje y te comento sobre tu siguiente paso.`
+Si aun tienes interés en conocer el programa responde este mensaje y te comento sobre tu siguiente paso.`
 
 const QUAL_BOOKED_MESSAGE = (name: string, apptDate: string, apptTime: string) =>
 `Hola, ${name}. 👋 te habla Luis del Equipo de Talk English Academy, de parte de Orlando.
