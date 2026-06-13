@@ -30,7 +30,7 @@ const OUTCOME_TAGS: Record<string, string[]> = {
 
 const OPTIN_MESSAGE = (name: string) =>
 `Hola, ${name}. 👋 te habla Luis del Equipo de Talk English Academy, de parte de Orlando.
-Vi que ingresaste tus datos en nuestra plataforma para conocer mas el programa de mentoring
+Vi que ingresaste tus datos en nuestra plataforma para conocer mas el programa de mentoring 1:1 de inglés.
 
 Si aun tienes interés en conocer el programa responde este mensaje y te comento sobre tu siguiente paso.`
 
@@ -95,10 +95,12 @@ Pasos:
 
 // ── Types ─────────────────────────────────────────────────────────────────
 type CustomField = { id: string; value: string | number }
+type Appointment = { calendarId: string; calendarName: string; startTime: string }
 type Opportunity = {
   id: string; name: string; contactId: string; pipelineStageId: string; status: string
   contact?: { firstName?: string; lastName?: string; email?: string; phone?: string; timezone?: string; dateAdded?: string; customFields?: CustomField[] }
   monetaryValue?: number; source?: string; createdAt?: string
+  appointment?: Appointment | null
 }
 type Stage = { id: string; name: string }
 type Note  = { id: string; body: string; dateAdded: string }
@@ -140,51 +142,19 @@ function resolveVars(text: string, lead: Opportunity | null): string {
   return text.replace(/\{[^}]+\}/g, m => { const v = map[m]; return (v === undefined || v === '') ? m : v })
 }
 
-const MONTH_MAP: Record<string,string> = {
-  'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
-  'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12'
-}
-
-// Parse "lunes, 6 de julio de 2026 8:00" → { year, month, day, hour, minute } or null
-function parseApptParts(apptRaw: string): { year:string; month:string; day:string; hour:string; minute:string } | null {
-  if (!apptRaw) return null
-  const m = apptRaw.match(/^(.+?)\s+(\d{1,2}):(\d{2})$/)
-  if (!m) return null
-  const dateStr = m[1].trim()
-  const hour = m[2].padStart(2,'0')
-  const minute = m[3]
-  const parts = dateStr.replace(/^[^,]+,\s*/, '').split(' de ')
-  if (parts.length < 3) return null
-  const day = parts[0].trim().padStart(2,'0')
-  const month = MONTH_MAP[parts[1].trim().toLowerCase()] || '01'
-  const year = parts[2].trim()
-  return { year, month, day, hour, minute }
-}
-
-// Given the appointment text (assumed to be in the contact's local timezone) and the
-// contact's IANA timezone, return the equivalent moment formatted in Luis's local timezone.
-function getApptInLuisTime(apptRaw: string, contactTz?: string): string {
-  const parts = parseApptParts(apptRaw)
-  if (!parts) return ''
-  const { year, month, day, hour, minute } = parts
-  const wallClock = `${year}-${month}-${day}T${hour}:${minute}:00`
-  if (!contactTz) {
-    return new Date(wallClock).toLocaleString('es-ES', { weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit', hour12:false })
-  }
+// Format an ISO startTime (from GHL calendar events — already timezone-aware)
+// into a readable string in a given IANA timezone, or in the browser's local
+// timezone if none is provided.
+function formatApptTime(isoStartTime: string, tz?: string): string {
   try {
-    // Find the UTC instant whose wall-clock time in contactTz matches `wallClock`
-    const naiveUTC = new Date(`${wallClock}Z`)
-    const tzFormatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: contactTz, year:'numeric', month:'2-digit', day:'2-digit',
-      hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false,
+    const d = new Date(isoStartTime)
+    return d.toLocaleString('es-ES', {
+      weekday: 'long', day: 'numeric', month: 'long',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+      ...(tz ? { timeZone: tz } : {}),
     })
-    const asIfUTC = tzFormatter.formatToParts(naiveUTC).reduce((acc, p) => { acc[p.type]=p.value; return acc }, {} as Record<string,string>)
-    const tzAsUTC = new Date(`${asIfUTC.year}-${asIfUTC.month}-${asIfUTC.day}T${asIfUTC.hour}:${asIfUTC.minute}:${asIfUTC.second}Z`)
-    const offsetMs = naiveUTC.getTime() - tzAsUTC.getTime()
-    const realUTC = new Date(naiveUTC.getTime() + offsetMs)
-    return realUTC.toLocaleString('es-ES', { weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit', hour12:false })
   } catch {
-    return new Date(wallClock).toLocaleString('es-ES', { weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit', hour12:false })
+    return isoStartTime
   }
 }
 
@@ -964,8 +934,9 @@ export default function Dashboard() {
                       <div style={{ width:34, height:34, borderRadius:'50%', background:isActiveDial?C.red:sel?C.blue:'#E8EDF8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:sel||isActiveDial?'#fff':C.blue }}>
                         {getInitials(opp)}
                       </div>
-                      {getCF(opp.contact?.customFields, CF_APPT_DATE) && (
-                        <span title="Tiene cita agendada" style={{ position:'absolute', top:-3, right:-3, width:14, height:14, borderRadius:'50%', background:C.red, border:`2px solid ${C.white}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:8 }}>📅</span>
+                      {opp.appointment && (
+                        <span title={`${opp.appointment.calendarName} — ${formatApptTime(opp.appointment.startTime)}`}
+                          style={{ position:'absolute', top:-3, right:-3, width:14, height:14, borderRadius:'50%', background:opp.appointment.calendarId===CAL_SALES_ID?'#059669':C.red, border:`2px solid ${C.white}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:8 }}>📅</span>
                       )}
                     </div>
                     <div style={{ minWidth:0 }}>
@@ -1012,32 +983,33 @@ export default function Dashboard() {
                   </button>
                 )}
                 {(() => {
-                  const apptRaw = getCF(activeLead.contact?.customFields, CF_APPT_DATE)
-                  if (!apptRaw) return null
-                  const luisTime = getApptInLuisTime(apptRaw, activeLead.contact?.timezone)
+                  const appt = activeLead.appointment
+                  if (!appt) return null
+                  const theirTime = formatApptTime(appt.startTime, activeLead.contact?.timezone)
+                  const myTime = formatApptTime(appt.startTime) // browser/local timezone (Luis)
+                  const isSales = appt.calendarId === CAL_SALES_ID
                   return (
-                    <span style={{ background:'#EEF2FF', color:C.blue, borderRadius:6, padding:'2px 8px', fontWeight:600, fontSize:10.5, display:'flex', alignItems:'center', gap:6 }}>
-                      <span>📅 {apptRaw}{activeLead.contact?.timezone ? ` (${activeLead.contact.timezone})` : ''}</span>
-                      {luisTime && (
-                        <>
-                          <span style={{ color:C.textLight }}>·</span>
-                          <span>🕐 Tu hora: {luisTime}</span>
-                        </>
-                      )}
+                    <span style={{ background:isSales?'#ECFDF5':'#EEF2FF', color:isSales?'#059669':C.blue, borderRadius:6, padding:'2px 8px', fontWeight:600, fontSize:10.5, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' as const }}>
+                      <span style={{ background:isSales?'#059669':C.blue, color:'#fff', borderRadius:4, padding:'0 6px', fontSize:9.5 }}>{appt.calendarName}</span>
+                      <span>📅 {theirTime}{activeLead.contact?.timezone ? ` (${activeLead.contact.timezone})` : ''}</span>
+                      <span style={{ color:C.textLight }}>·</span>
+                      <span>🕐 Tu hora: {myTime}</span>
                     </span>
                   )
                 })()}
               </p>
             </div>
             <button onClick={() => {
-                const apptRaw = getCF(activeLead.contact?.customFields, CF_APPT_DATE)
-                const hasAppt = !!apptRaw
+                const appt = activeLead.appointment
+                const hasAppt = !!appt
                 const firstName = activeLead.contact?.firstName ?? 'estudiante'
                 const template = getQuickMessageTemplate(selectedStage?.name, hasAppt)
                 let message = ''
-                if (template === 'qual_booked') {
-                  const apptParts = apptRaw.match(/^(.+?)\s+(\d{1,2}:\d{2})$/)
-                  const apptDate = apptParts ? apptParts[1].trim() : ''
+                if (template === 'qual_booked' && appt) {
+                  const theirTime = formatApptTime(appt.startTime, activeLead.contact?.timezone)
+                  // theirTime is like "viernes, 19 de junio de 2026 13:30" → split date/time
+                  const apptParts = theirTime.match(/^(.+?)\s+(\d{1,2}:\d{2})$/)
+                  const apptDate = apptParts ? apptParts[1].trim() : theirTime
                   const apptTime = apptParts ? apptParts[2].trim() : ''
                   message = QUAL_BOOKED_MESSAGE(firstName, apptDate, apptTime)
                 } else {
@@ -1174,11 +1146,13 @@ export default function Dashboard() {
                 {[
                   ['Nombre',getFullName(activeLead)],['Email',activeLead.contact?.email??'—'],
                   ['Teléfono',activeLead.contact?.phone??'—'],['Zona Horaria',activeLead.contact?.timezone??'—'],
-                  ['Fecha de Cita',getCF(activeLead.contact?.customFields,CF_APPT_DATE)||'—'],
+                  ['Calendario',activeLead.appointment?.calendarName??'—'],
+                  ['Fecha de Cita (su hora)',activeLead.appointment?formatApptTime(activeLead.appointment.startTime,activeLead.contact?.timezone):'—'],
+                  ['Fecha de Cita (tu hora)',activeLead.appointment?formatApptTime(activeLead.appointment.startTime):'—'],
                   ['Fuente',activeLead.source??'—'],['Stage',selectedStage?.name??'—'],['Status',activeLead.status??'—'],
                   ['Creado',activeLead.createdAt?new Date(activeLead.createdAt).toLocaleDateString('es-ES'):'—'],
-                ].map(([label,value],idx)=>(
-                  <div key={label} style={{ display:'flex', justifyContent:'space-between', padding:'11px 16px', borderBottom:idx<8?`1px solid ${C.border}`:'none', background:idx%2===0?C.white:'#FAFBFF' }}>
+                ].map(([label,value],idx,arr)=>(
+                  <div key={label} style={{ display:'flex', justifyContent:'space-between', padding:'11px 16px', borderBottom:idx<arr.length-1?`1px solid ${C.border}`:'none', background:idx%2===0?C.white:'#FAFBFF' }}>
                     <span style={{ fontSize:12, color:C.textMuted, fontWeight:500 }}>{label}</span>
                     <span style={{ fontSize:12, color:C.darkBlue, fontWeight:600, textAlign:'right' as const, maxWidth:'60%' }}>{value}</span>
                   </div>

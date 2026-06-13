@@ -20,6 +20,24 @@ export async function getPipelineStages() {
   return res.json()
 }
 
+// Fetch upcoming + recent calendar events for a given calendar.
+// Returns a map of contactId -> event (most relevant / soonest one wins).
+export async function getCalendarEvents(calendarId: string, startTime: number, endTime: number) {
+  const params = new URLSearchParams({
+    locationId: process.env.GHL_LOCATION_ID!,
+    calendarId,
+    startTime: String(startTime),
+    endTime: String(endTime),
+  })
+  const res = await freshFetch(
+    `${BASE_URL}/calendars/events?${params}`,
+    { headers: headers() }
+  )
+  if (!res.ok) throw new Error(`Calendar events error (${calendarId}): ${res.status}`)
+  const data = await res.json()
+  return (data?.events || []) as Record<string, unknown>[]
+}
+
 export async function getOpportunitiesByPipeline() {
   // Fetch all pages (100 per page max).
   // GHL cursor pagination requires BOTH startAfter (timestamp) AND startAfterId (last opp id).
